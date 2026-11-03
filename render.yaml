@@ -1,0 +1,50 @@
+# =============================================================================
+# Render Blueprint — SMK Smart Exam
+# Deploy: Render Dashboard → New → Blueprint → เลือก Repository นี้
+#
+# โครงสร้าง: Web Service เดียว (Express ให้บริการทั้ง API และ React build)
+#            + PostgreSQL ที่ Render จัดการให้
+# =============================================================================
+
+databases:
+  - name: smk-smart-exam-db
+    databaseName: smk_smart_exam
+    user: smk
+    plan: free
+    region: singapore
+    # ปิดการเข้าถึงจากภายนอก — เชื่อมต่อได้เฉพาะ Service ภายใน Render
+    ipAllowList: []
+
+services:
+  - type: web
+    name: smk-smart-exam
+    runtime: node
+    plan: free
+    region: singapore
+    branch: main
+    autoDeploy: true
+    # ต้องติดตั้ง devDependencies ด้วย (TypeScript, Vite, Prisma CLI) จึงใช้ --include=dev
+    buildCommand: npm ci --include=dev && npm run build
+    # รัน prisma migrate deploy → seed ข้อมูลพื้นฐาน → เริ่มเซิร์ฟเวอร์
+    startCommand: npm run start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: smk-smart-exam-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 8h
+      - key: BCRYPT_ROUNDS
+        value: "10"
+      - key: SEED_ADMIN_USERNAME
+        value: admin
+      # กำหนดค่าเองในหน้า Render Dashboard ตอนสร้าง Blueprint (ไม่เก็บใน Git)
+      - key: SEED_ADMIN_PASSWORD
+        sync: false
