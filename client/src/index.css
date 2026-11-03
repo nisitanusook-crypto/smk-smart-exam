@@ -1,0 +1,67 @@
+@import 'tailwindcss';
+
+/* ธีมสี SMK Smart Exam: น้ำเงินเข้ม • ขาว • ทอง */
+@theme {
+  --font-sans: 'Sarabun', 'Noto Sans Thai', 'Leelawadee UI', Tahoma, sans-serif;
+
+  --color-navy-50: #f2f5fc;
+  --color-navy-100: #e3e9f7;
+  --color-navy-200: #c5d1ef;
+  --color-navy-300: #98ade0;
+  --color-navy-400: #6582cc;
+  --color-navy-500: #3a5cb8;
+  --color-navy-600: #23459f;
+  --color-navy-700: #1a3786;
+  --color-navy-800: #12296a;
+  --color-navy-900: #0b1f4d;
+  --color-navy-950: #06122e;
+
+  --color-gold-50: #fdf9ec;
+  --color-gold-100: #f9efcb;
+  --color-gold-200: #f2dd94;
+  --color-gold-300: #e9c75a;
+  --color-gold-400: #e2b93f;
+  --color-gold-500: #d4a72c;
+  --color-gold-600: #b58a1f;
+  --color-gold-700: #8f6a1a;
+  --color-gold-800: #6e521a;
+  --color-gold-900: #574217;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    @apply bg-navy-50 text-slate-800 antialiased;
+    font-feature-settings: 'kern';
+    line-height: 1.6;
+  }
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-gold-500;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl border border-navy-100 bg-white shadow-sm;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60;
+  }
+  .btn-primary {
+    @apply bg-navy-900 text-white hover:bg-navy-800;
+  }
+  .btn-gold {
+    @apply bg-gold-500 text-navy-950 hover:bg-gold-400;
+  }
+  .btn-outline {
+    @apply border border-navy-200 bg-white text-navy-900 hover:bg-navy-50;
+  }
+  .input {
+    @apply w-full rounded-xl border border-navy-200 bg-white px-3.5 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 focus:border-navy-500 focus:ring-2 focus:ring-navy-200 focus:outline-none;
+  }
+  .label {
+    @apply mb-1.5 block text-sm font-medium text-navy-900;
+  }
+}

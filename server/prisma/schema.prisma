@@ -1,0 +1,379 @@
+// ============================================================================
+// SMK Smart Exam — Prisma Schema (PostgreSQL)
+// ระบบจำลองการสอบ O-NET ม.3 และ ม.6 โรงเรียนวัดศิริมงคล
+//
+// นโยบายข้อมูลสำคัญ:
+//   1) รองรับเฉพาะ O-NET ระดับ ม.3 (M3) และ ม.6 (M6) — ไม่รองรับ V-NET
+//   2) ข้อสอบและเฉลยต้องมาจากเอกสารจริงที่ตรวจสอบได้เท่านั้น
+//      ห้ามสร้างข้อสอบ/เฉลยด้วย AI — ทุกข้อต้องอ้างอิงแหล่งที่มา (ExamSource)
+//      และผ่านการตรวจสอบโดยบุคคล (verificationStatus = VERIFIED) ก่อนใช้งาน
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+/// บทบาทผู้ใช้งาน
+enum Role {
+  ADMIN
+  TEACHER
+  STUDENT
+}
+
+/// ระดับชั้นที่รองรับ (O-NET เท่านั้น)
+enum GradeLevel {
+  M3 // มัธยมศึกษาปีที่ 3
+  M6 // มัธยมศึกษาปีที่ 6
+}
+
+/// ประเภทแหล่งที่มาของเอกสารข้อสอบ
+enum SourceType {
+  NIETS_OFFICIAL // เอกสารเผยแพร่โดย สทศ. โดยตรง
+  NIETS_RELEASED_ARCHIVE // ข้อสอบ/เฉลยที่ สทศ. เปิดเผยย้อนหลัง
+  OTHER_VERIFIED // แหล่งอื่นที่ตรวจสอบย้อนกลับถึงต้นฉบับได้
+}
+
+/// สถานะการตรวจสอบเนื้อหา
+enum VerificationStatus {
+  DRAFT // กำลังบันทึก/ถอดความจากต้นฉบับ
+  PENDING_REVIEW // รอผู้ตรวจสอบ
+  VERIFIED // ตรวจสอบกับต้นฉบับแล้ว พร้อมใช้งาน
+  REJECTED // ไม่ผ่าน/อ้างอิงไม่ได้
+}
+
+/// รูปแบบข้อสอบ O-NET
+enum QuestionType {
+  SINGLE_CHOICE // ปรนัยเลือกตอบ 1 คำตอบ
+  MULTIPLE_RESPONSE // เลือกได้หลายคำตอบ
+  PAIRED_CHOICE // ปรนัยแบบเลือกตอบเชิงซ้อน (หลายข้อย่อย)
+  NUMERIC_ANSWER // ระบายตัวเลข/เติมคำตอบเป็นตัวเลข
+  MATCHING // จับคู่
+}
+
+/// โหมดการสอบ
+enum ExamMode {
+  PRACTICE // โหมดฝึกสอบ
+  SIMULATION // โหมดจำลองสนามสอบจริง
+}
+
+enum AttemptStatus {
+  IN_PROGRESS
+  SUBMITTED
+  EXPIRED
+  CANCELLED
+}
+
+// ---------------------------------------------------------------------------
+// ผู้ใช้งานและโครงสร้างโรงเรียน
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String    @id @default(cuid())
+  username     String    @unique
+  passwordHash String
+  role         Role
+  prefix       String? // คำนำหน้า เช่น นาย, นางสาว, สามเณร, พระ
+  firstName    String
+  lastName     String
+  email        String?   @unique
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  teacherProfile TeacherProfile?
+  studentProfile StudentProfile?
+
+  createdSources    ExamSource[]  @relation("SourceCreatedBy")
+  verifiedSources   ExamSource[]  @relation("SourceVerifiedBy")
+  createdPapers     ExamPaper[]   @relation("PaperCreatedBy")
+  verifiedPapers    ExamPaper[]   @relation("PaperVerifiedBy")
+  createdQuestions  Question[]    @relation("QuestionCreatedBy")
+  verifiedQuestions Question[]    @relation("QuestionVerifiedBy")
+  attempts          ExamAttempt[]
+  auditLogs         AuditLog[]
+
+  @@index([role])
+}
+
+model TeacherProfile {
+  id           String      @id @default(cuid())
+  userId       String      @unique
+  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  employeeCode String?     @unique
+  department   String? // กลุ่มสาระการเรียนรู้
+  classrooms   Classroom[]
+}
+
+model StudentProfile {
+  id          String     @id @default(cuid())
+  userId      String     @unique
+  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  studentCode String     @unique // เลขประจำตัวนักเรียน
+  gradeLevel  GradeLevel
+  classroomId String?
+  classroom   Classroom? @relation(fields: [classroomId], references: [id], onDelete: SetNull)
+
+  @@index([gradeLevel])
+}
+
+model Classroom {
+  id                String           @id @default(cuid())
+  name              String // เช่น "ม.3/1"
+  gradeLevel        GradeLevel
+  academicYear      Int // ปีการศึกษา (พ.ศ.)
+  homeroomTeacherId String?
+  homeroomTeacher   TeacherProfile?  @relation(fields: [homeroomTeacherId], references: [id], onDelete: SetNull)
+  students          StudentProfile[]
+  createdAt         DateTime         @default(now())
+
+  @@unique([name, academicYear])
+}
+
+// ---------------------------------------------------------------------------
+// คลังข้อสอบ O-NET
+// ---------------------------------------------------------------------------
+
+/// วิชาที่สอบ O-NET แยกตามระดับชั้น (เช่น ภาษาไทย ม.3)
+model Subject {
+  id         String      @id @default(cuid())
+  code       String // รหัสวิชาภายในระบบ เช่น TH, MA, SC, EN, SO
+  nameTh     String
+  nameEn     String?
+  gradeLevel GradeLevel
+  isActive   Boolean     @default(true) // ยังมีการสอบในปัจจุบันหรือไม่
+  sortOrder  Int         @default(0)
+  papers     ExamPaper[]
+  topics     Topic[]
+
+  @@unique([code, gradeLevel])
+}
+
+/// สาระ/มาตรฐาน/ตัวชี้วัด สำหรับวิเคราะห์ผล
+model Topic {
+  id        String          @id @default(cuid())
+  subjectId String
+  subject   Subject         @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  code      String? // รหัสมาตรฐาน/ตัวชี้วัด เช่น ท 1.1 ม.3/1
+  nameTh    String
+  questions QuestionTopic[]
+
+  @@unique([subjectId, nameTh])
+}
+
+/// เอกสารต้นฉบับที่ใช้อ้างอิง (ไฟล์ PDF ข้อสอบ/เฉลยจาก สทศ.)
+model ExamSource {
+  id                 String             @id @default(cuid())
+  title              String
+  sourceType         SourceType
+  publisher          String             @default("สถาบันทดสอบทางการศึกษาแห่งชาติ (องค์การมหาชน)")
+  url                String? // ลิงก์ต้นฉบับ
+  fileUrl            String? // ไฟล์สำเนาที่จัดเก็บในระบบ
+  fileChecksum       String? // SHA-256 เพื่อยืนยันว่าไม่ถูกแก้ไข
+  publishedYear      Int? // ปี พ.ศ. ที่เผยแพร่
+  notes              String?
+  verificationStatus VerificationStatus @default(PENDING_REVIEW)
+  createdById        String?
+  createdBy          User?              @relation("SourceCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  verifiedById       String?
+  verifiedBy         User?              @relation("SourceVerifiedBy", fields: [verifiedById], references: [id], onDelete: SetNull)
+  verifiedAt         DateTime?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  papers          ExamPaper[] @relation("PaperSource")
+  answerKeyPapers ExamPaper[] @relation("PaperAnswerKeySource")
+  questions       Question[]
+}
+
+/// ชุดข้อสอบ O-NET จริง 1 ชุด = 1 วิชา × 1 ระดับชั้น × 1 ปีการศึกษา
+model ExamPaper {
+  id                 String             @id @default(cuid())
+  subjectId          String
+  subject            Subject            @relation(fields: [subjectId], references: [id], onDelete: Restrict)
+  gradeLevel         GradeLevel
+  academicYear       Int // ปีการศึกษาที่สอบ (พ.ศ.) เช่น 2566
+  title              String
+  durationMinutes    Int // เวลาสอบตามจริง
+  totalScore         Decimal            @default(100) @db.Decimal(6, 2)
+  totalQuestions     Int? // จำนวนข้อตามต้นฉบับ (ใช้ตรวจความครบถ้วน)
+  instructions       String? // คำชี้แจงตามต้นฉบับ
+  sourceId           String
+  source             ExamSource         @relation("PaperSource", fields: [sourceId], references: [id], onDelete: Restrict)
+  answerKeySourceId  String? // เอกสารเฉลยอย่างเป็นทางการ (ถ้าแยกไฟล์)
+  answerKeySource    ExamSource?        @relation("PaperAnswerKeySource", fields: [answerKeySourceId], references: [id], onDelete: SetNull)
+  verificationStatus VerificationStatus @default(DRAFT)
+  isPublished        Boolean            @default(false) // เปิดให้นักเรียนใช้งาน
+  createdById        String?
+  createdBy          User?              @relation("PaperCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  verifiedById       String?
+  verifiedBy         User?              @relation("PaperVerifiedBy", fields: [verifiedById], references: [id], onDelete: SetNull)
+  verifiedAt         DateTime?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  sections  ExamSection[]
+  questions Question[]
+  attempts  ExamAttempt[]
+
+  @@unique([subjectId, academicYear])
+  @@index([gradeLevel, academicYear])
+}
+
+/// ตอน/ส่วนของข้อสอบ (เช่น ตอนที่ 1 ปรนัย 4 ตัวเลือก)
+model ExamSection {
+  id          String     @id @default(cuid())
+  paperId     String
+  paper       ExamPaper  @relation(fields: [paperId], references: [id], onDelete: Cascade)
+  order       Int
+  title       String
+  instruction String?
+  questions   Question[]
+
+  @@unique([paperId, order])
+}
+
+/// บทอ่าน/สถานการณ์ที่ใช้ร่วมกันหลายข้อ
+model Passage {
+  id        String     @id @default(cuid())
+  title     String?
+  content   String // เนื้อหาถอดความตรงตามต้นฉบับ
+  imageUrl  String?
+  questions Question[]
+}
+
+model Question {
+  id                 String             @id @default(cuid())
+  paperId            String
+  paper              ExamPaper          @relation(fields: [paperId], references: [id], onDelete: Cascade)
+  sectionId          String?
+  section            ExamSection?       @relation(fields: [sectionId], references: [id], onDelete: SetNull)
+  passageId          String?
+  passage            Passage?           @relation(fields: [passageId], references: [id], onDelete: SetNull)
+  number             Int // หมายเลขข้อตามต้นฉบับ
+  type               QuestionType
+  stem               String // โจทย์ (ถอดความตรงตามต้นฉบับ)
+  stemImageUrl       String?
+  score              Decimal            @default(1) @db.Decimal(6, 2)
+  sourceId           String
+  source             ExamSource         @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+  sourcePage         Int? // หน้าที่ปรากฏในเอกสารต้นฉบับ
+  verificationStatus VerificationStatus @default(DRAFT)
+  createdById        String?
+  createdBy          User?              @relation("QuestionCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  verifiedById       String?
+  verifiedBy         User?              @relation("QuestionVerifiedBy", fields: [verifiedById], references: [id], onDelete: SetNull)
+  verifiedAt         DateTime?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  choices   Choice[]
+  answerKey AnswerKey?
+  topics    QuestionTopic[]
+  answers   AttemptAnswer[]
+
+  @@unique([paperId, number])
+}
+
+model Choice {
+  id         String   @id @default(cuid())
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  label      String // เลขตัวเลือกตามต้นฉบับ เช่น "1", "2", ... หรือ "ก", "ข"
+  content    String
+  imageUrl   String?
+  order      Int
+
+  @@unique([questionId, label])
+}
+
+/// เฉลยอย่างเป็นทางการ — แยกตารางเพื่อควบคุมสิทธิ์ ไม่ส่งให้ผู้สอบระหว่างสอบ
+model AnswerKey {
+  id            String   @id @default(cuid())
+  questionId    String   @unique
+  question      Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  /// รูปแบบคำตอบตาม type เช่น { "labels": ["3"] } หรือ { "numeric": "12.5" }
+  correctAnswer Json
+  /// แหล่งอ้างอิงเฉลย (เอกสารเฉลยของ สทศ.) — จำเป็นต้องระบุ
+  sourceRef     String
+  /// คำอธิบายเฉลย (ต้องมาจากแหล่งอ้างอิงหรือครูผู้เชี่ยวชาญ ไม่ใช่ AI)
+  explanation   String?
+  explanationBy String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model QuestionTopic {
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  topicId    String
+  topic      Topic    @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  @@id([questionId, topicId])
+}
+
+// ---------------------------------------------------------------------------
+// การสอบและผลคะแนน (โครงสร้างเตรียมไว้สำหรับ Phase ถัดไป)
+// ---------------------------------------------------------------------------
+
+model ExamAttempt {
+  id          String          @id @default(cuid())
+  userId      String
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  paperId     String
+  paper       ExamPaper       @relation(fields: [paperId], references: [id], onDelete: Restrict)
+  mode        ExamMode
+  status      AttemptStatus   @default(IN_PROGRESS)
+  startedAt   DateTime        @default(now())
+  expiresAt   DateTime? // เวลาหมดเขต (โหมดจำลองสนามสอบ)
+  submittedAt DateTime?
+  rawScore    Decimal?        @db.Decimal(6, 2)
+  answers     AttemptAnswer[]
+
+  @@index([userId, paperId])
+  @@index([paperId, mode])
+}
+
+model AttemptAnswer {
+  id         String      @id @default(cuid())
+  attemptId  String
+  attempt    ExamAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  questionId String
+  question   Question    @relation(fields: [questionId], references: [id], onDelete: Restrict)
+  response   Json? // คำตอบของผู้สอบ
+  isFlagged  Boolean     @default(false) // ทำเครื่องหมายทบทวน
+  isCorrect  Boolean?
+  score      Decimal?    @db.Decimal(6, 2)
+  answeredAt DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  @@unique([attemptId, questionId])
+}
+
+// ---------------------------------------------------------------------------
+// บันทึกการใช้งาน
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String // เช่น LOGIN, USER_CREATE, PAPER_VERIFY
+  entity    String?
+  entityId  String?
+  detail    Json?
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([userId])
+}
